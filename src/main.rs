@@ -8,6 +8,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime,Utc};
+use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
 
 #[tokio::main]
 async fn main() {
@@ -62,7 +63,7 @@ async fn main() {
 async fn send_feeds_scheduler(db: SqlitePool) {
     loop {
         send_feeds(db.clone()).await;
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
     }
 }
 
@@ -76,19 +77,19 @@ async fn send_feeds(db: SqlitePool) {
 }
 
 async fn send_feed(db: SqlitePool, feed: RssFeed) {
-    let body = reqwest::get(feed.feed_url).await.unwrap().bytes().await.unwrap();
+    let body = reqwest::get(feed.feed_url.clone()).await.unwrap().bytes().await.unwrap();
     let channel = rss::Channel::read_from(&body[..]).unwrap();
     let item = channel.items.into_iter().next().unwrap();
-    let pub_date = DateTime::parse_from_rfc2822(&item.pub_date.unwrap()).unwrap();
-    let link = item.link.unwrap();
+    let pub_date = DateTime::parse_from_rfc2822(item.pub_date.as_ref().unwrap()).unwrap();
+    let link = item.link.as_ref().unwrap();
     tracing::info!("PubDate: {} and Link: {}", pub_date, link);
     match feed.last_pub_date {
         Some(last_pub_date) if last_pub_date == pub_date => {
             // Do nothing
         },
         _ => {
-            // TODO Send notification
-            tracing::info!("SENDING NOTIFICATION WITH LINK: {}", link);
+            let smtp_settings = SmtpSettings::retrieve(&db).await;
+            send_notification(smtp_settings, &feed, &item).await;
             // Update the db
             sqlx::query("UPDATE rss_feeds SET last_pub_date = $1 WHERE id = $2")
                 .bind(pub_date).bind(feed.id)
@@ -97,9 +98,26 @@ async fn send_feed(db: SqlitePool, feed: RssFeed) {
     }
 }
 
-async fn send_notification(rssitem: rss::Item) {
-    //TODO
-    unimplemented!()
+async fn send_notification(ss: SmtpSettings, feed: &RssFeed, rssitem: &rss::Item) {
+    // Build a simple multipart message
+    let link = rssitem.link.as_ref().unwrap();
+    tracing::info!("SENDING NOTIFICATION WITH LINK: {}", link);
+    let title = rssitem.title.as_ref().unwrap();
+    let description = rssitem.description.as_ref().map_or("", |x| x.as_str());
+    let from_name = format!("RSS {}", feed.name);
+    let html_body = format!("<p>Original Post: <a href=\"{}\">{}</a></p>{}", link, title, description);
+    let text_body = format!("Original Post: {} - {}\r\n", title, link);
+    let message = MessageBuilder::new()
+        .from((from_name.as_str(), ss.from_email.as_str()))
+        .to(ss.to_email.as_str())
+        .subject(title)
+        .html_body(html_body)
+        .text_body(text_body);
+    SmtpClientBuilder::new(ss.host, ss.port)
+        .implicit_tls(false)
+        .credentials((ss.auth_user, ss.auth_password))
+        .connect().await.unwrap()
+        .send(message).await.unwrap();
 }
 
 async fn root() -> &'static str{
@@ -180,6 +198,7 @@ async fn force_send_feed(
     StatusCode::OK
 }
 
+#[derive(FromRow)]
 struct SmtpSettings {
     host: String,
     port: u16,
@@ -188,5 +207,13 @@ struct SmtpSettings {
     to_email: String,
     auth_user: String,
     auth_password: String,
+}
+
+impl SmtpSettings {
+    async fn retrieve(db: &SqlitePool) -> SmtpSettings {
+        sqlx::query_as(
+            "SELECT host, port, from_email, from_name, to_email, auth_user, auth_password FROM smtp_settings WHERE id = 1"
+        ).fetch_one(db).await.unwrap()
+    }
 }
 
