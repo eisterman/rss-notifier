@@ -49,7 +49,7 @@ async fn main() {
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
-        .route("/feeds/:id/", get(get_feed).put(modify_feed))
+        .route("/feeds/:id/", get(get_feed).put(modify_feed).delete(delete_feed))
         .route("/feeds/:id/forcesend", post(force_send_feed))
         .route("/feeds/", get(get_feeds).post(create_feed))
         .with_state(db.clone());
@@ -167,6 +167,16 @@ async fn modify_feed(
         .bind(&payload.name).bind(&payload.feed_url).bind(feed_id)
         .execute(&db).await.unwrap();
     get_feed(State(db), Path(feed_id)).await
+}
+
+async fn delete_feed(
+    State(db): State<SqlitePool>,
+    Path(feed_id): Path<u32>
+) -> StatusCode {
+    sqlx::query("DELETE FROM rss_feeds WHERE id = $1")
+        .bind(feed_id)
+        .execute(&db).await.unwrap();
+    StatusCode::NO_CONTENT
 }
 
 async fn get_feed(
