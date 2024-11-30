@@ -14,6 +14,8 @@ serde = { version = "1.0.215", features = ["derive"] }
 reqwest = "0.12.9"
 rss = { version = "2.0.11", features = ["validation"] }
 mail-send = "0.4.9"
+dotenv = "0.15.0"
+clap = { version = "4.5.21", features = ["derive", "env"] }
 
 [dependencies.sqlx]
 version = "0.8"
