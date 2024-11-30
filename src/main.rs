@@ -1,6 +1,6 @@
-use std::env;
 use std::sync::Arc;
-use sqlx::{migrate::MigrateDatabase, FromRow, Sqlite, SqlitePool};
+use sqlx::{FromRow, Sqlite, SqlitePool};
+use sqlx::migrate::{MigrateDatabase, Migrator};
 use axum::{
     routing::{get, post},
     extract::{Path, State},
@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime,Utc};
 use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
 use clap::Parser;
+
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 #[derive(Parser)]
 struct Config {
@@ -58,14 +60,7 @@ async fn main() {
     // Open DB
     let db = SqlitePool::connect(&config.database_url).await.unwrap();
     // Migrate if needed
-    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let migrations = std::path::Path::new(&crate_dir).join("./migrations");
-    let migration_results = sqlx::migrate::Migrator::new(migrations)
-        .await
-        .unwrap()
-        .run(&db)
-        .await;
-    match migration_results {
+    match MIGRATOR.run(&db).await {
         Ok(_) => println!("Migration success"),
         Err(error) => {
             panic!("Migration error: {}", error);
