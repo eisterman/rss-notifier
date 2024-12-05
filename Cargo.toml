@@ -16,6 +16,8 @@ rss = { version = "2.0.11", features = ["validation"] }
 mail-send = "0.4.9"
 dotenv = "0.15.0"
 clap = { version = "4.5.21", features = ["derive", "env"] }
+anyhow = "1.0.93"
+tower-http = { version = "0.6.2", features = ["cors"] }
 
 [dependencies.sqlx]
 version = "0.8"

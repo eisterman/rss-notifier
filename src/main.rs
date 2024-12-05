@@ -4,13 +4,16 @@ use sqlx::migrate::{MigrateDatabase, Migrator};
 use axum::{
     routing::{get, post},
     extract::{Path, State},
-    http::StatusCode,
+    http::{Method, header, StatusCode},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime,Utc};
 use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
 use clap::Parser;
+use anyhow::{anyhow,ensure,bail,Result};
+use tower::{ServiceBuilder, ServiceExt, Service};
+use tower_http::cors::{Any, CorsLayer};
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -67,15 +70,27 @@ async fn main() {
         }
     }
     // TEST - Empty last_pub_date
-    sqlx::query("UPDATE rss_feeds SET last_pub_date = NULL").execute(&db).await.unwrap();
-    // Arrange Web Server
+    // sqlx::query("UPDATE rss_feeds SET last_pub_date = NULL").execute(&db).await.unwrap();
+    // Prepare Web Server Context
     let context = Context{config: Arc::new(config), db: db.clone()};
+    // Prepare Middlewares
+    let cors = CorsLayer::new()
+        // allow `GET` and `POST` when accessing the resource
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        // allow headers in requests
+        .allow_headers([header::CONTENT_TYPE])
+        // allow requests from any origin
+        .allow_origin(Any);
+    let middlewares = ServiceBuilder::new()
+        .layer(cors);
+    // Launch Web Server
     let app = Router::new()
         // `GET /` goes to `root`
         .route("/", get(root))
         .route("/feeds/:id/", get(get_feed).put(modify_feed).delete(delete_feed))
         .route("/feeds/:id/forcesend", post(force_send_feed))
         .route("/feeds/", get(get_feeds).post(create_feed))
+        .layer(middlewares)
         .with_state(context.clone());
     tokio::spawn(async move {
         send_feeds_scheduler(&context).await;
