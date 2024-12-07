@@ -7,3 +7,7 @@ export const formSchema = z.object({
 
 export type FormSchema = typeof formSchema;
 
+export const modifyFormSchema = formSchema.extend({
+  id: z.number(),
+});
+

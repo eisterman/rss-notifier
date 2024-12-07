@@ -2,7 +2,7 @@ import type { PageLoad } from './$types';  // Svelte-Kit
 import type { Feed } from '$types';  // My Types
 
 import { superValidate } from "sveltekit-superforms";
-import { formSchema } from "./schema";
+import { formSchema, modifyFormSchema } from "./schema";
 import { zod } from "sveltekit-superforms/adapters";
 
 export const load: PageLoad = async ({ fetch }) => {
@@ -13,6 +13,7 @@ export const load: PageLoad = async ({ fetch }) => {
   return {
     feeds,
     form: await superValidate(zod(formSchema)), // Schema for Form (cached)
+    modifyForm: await superValidate(zod(modifyFormSchema))
   };
   // If an error is thrown during load, the nearest +error.svelte will be rendered.
   // For expected errors, use the error helper from @sveltejs/kit to specify
