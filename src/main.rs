@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
     extract::{Path, State},
-    http::{Method, header, StatusCode},
+    http::{Method, header, StatusCode, Request},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -16,21 +16,33 @@ use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
 use clap::Parser;
 use anyhow::{anyhow, Result, Context};
 use tower::{ServiceBuilder};
-use tower_http::cors::{Any, CorsLayer};
-use tracing::{info, error, instrument, debug};
+use tower_http::{
+    cors::{Any, CorsLayer},
+    trace::{TraceLayer, DefaultOnResponse},
+    LatencyUnit
+};
+use tracing::{
+    info, error, debug, info_span, enabled,
+    instrument, Level, Span
+};
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 // Make our own error that wraps `anyhow::Error`.
 struct AppError(anyhow::Error);
+// TODO: use thiserror to granularize the errors and differentiate the return response.
+//  for example I don't want the SQLErrors to be sent directly if not in Debug Mode, but other more
+//  simple errors like "obj not found" need to be sent as-they-are.
 
 // Tell axum how to convert `AppError` into a response.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("{:?}", self.0),  // Format with {:#} in prod? IDK
-        ).into_response()
+        let body = if enabled!(Level::DEBUG) {
+            format!("{:?}", self.0)  // Format with verbose {:?} with Debug enabled
+        } else {
+            format!("{:#}", self.0)
+        };
+        (StatusCode::INTERNAL_SERVER_ERROR, body).into_response()
     }
 }
 
@@ -103,8 +115,26 @@ async fn main() -> Result<()> {
         .allow_headers([header::CONTENT_TYPE])
         // allow requests from any origin
         .allow_origin(Any);
+    let tracelayer = TraceLayer::new_for_http()
+        .make_span_with(|request: &Request<_>| {
+            // Log the matched route's path (with placeholders not filled in).
+            let path = request.uri().to_string();
+            info_span!(
+                "http_request",
+                method = ?request.method(),
+                path
+            )
+        })
+        .on_request(|_request: &Request<_>, _span: &Span| {
+                debug!("Request received");
+        })
+        .on_response(
+            DefaultOnResponse::new()
+                .level(Level::DEBUG)
+                .latency_unit(LatencyUnit::Millis)
+        );
     let middlewares = ServiceBuilder::new()
-        .layer(cors);
+        .layer(tracelayer).layer(cors);
     // Launch Web Server
     let app = Router::new()
         // `GET /` goes to `root`
@@ -149,7 +179,6 @@ async fn send_feeds(ctx: &AppContext) -> Result<()> {
 
 #[instrument(skip_all, fields(id = feed.id))]
 async fn check_send_feed(ctx: &AppContext, feed: RssFeed) {
-    // Here we can create a thiserror to choose action for various errors.
     let try_block = async move {
         let body = reqwest::get(feed.feed_url.clone()).await.context("RSS Fetch failed")?.bytes().await?;
         let channel = rss::Channel::read_from(&body[..]).context("RSS channel read failed")?;
@@ -217,74 +246,75 @@ struct RssFeed {
     last_pub_date: Option<DateTime<Utc>>,
 }
 
+// TODO: Better errors for all the endpoints
 async fn create_feed(
     State(ctx): State<AppContext>,
     Json(payload): Json<CreateRssFeed>,
-) -> (StatusCode, Json<RssFeed>) {
-    let mut transaction = ctx.db.begin().await.unwrap();
+) -> Result<(StatusCode, Json<RssFeed>), AppError> {
+    let mut transaction = ctx.db.begin().await?;
     sqlx::query("INSERT INTO rss_feeds (name, feed_url)\
     VALUES ($1, $2)")
         .bind(&payload.name).bind(&payload.feed_url)
-        .execute(&mut *transaction).await.unwrap();
-    let (id,): (u32,) = sqlx::query_as("SELECT last_insert_rowid()").fetch_one(&mut *transaction).await.unwrap();
-    transaction.commit().await.unwrap();
+        .execute(&mut *transaction).await?;
+    let (id,): (u32,) = sqlx::query_as("SELECT last_insert_rowid()").fetch_one(&mut *transaction).await?;
+    transaction.commit().await?;
     let result = RssFeed{
         id,
         name:payload.name,
         feed_url:payload.feed_url,
         last_pub_date:None,
     };
-    (StatusCode::CREATED, Json(result))
+    Ok((StatusCode::CREATED, Json(result)))
 }
 
 async fn modify_feed(
     State(ctx): State<AppContext>,
     Path(feed_id): Path<u32>,
     Json(payload): Json<CreateRssFeed>,
-) -> (StatusCode, Json<RssFeed>) {
+) -> Result<(StatusCode, Json<RssFeed>), AppError> {
     sqlx::query("UPDATE rss_feeds SET name = $1, feed_url = $2 WHERE id = $3")
         .bind(&payload.name).bind(&payload.feed_url).bind(feed_id)
-        .execute(&ctx.db).await.unwrap();
+        .execute(&ctx.db).await?;
     get_feed(State(ctx), Path(feed_id)).await
 }
 
 async fn delete_feed(
     State(ctx): State<AppContext>,
     Path(feed_id): Path<u32>
-) -> StatusCode {
+) -> Result<StatusCode, AppError> {
     sqlx::query("DELETE FROM rss_feeds WHERE id = $1")
         .bind(feed_id)
-        .execute(&ctx.db).await.unwrap();
-    StatusCode::NO_CONTENT
+        .execute(&ctx.db).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_feed(
     State(ctx): State<AppContext>,
     Path(feed_id): Path<u32>
-) -> (StatusCode, Json<RssFeed>) {
+) -> Result<(StatusCode, Json<RssFeed>), AppError> {
     let feed: RssFeed = sqlx::query_as("SELECT id, name, feed_url, last_pub_date FROM rss_feeds WHERE id = $1")
         .bind(feed_id)
-        .fetch_one(&ctx.db).await.unwrap();
-    (StatusCode::OK, Json(feed))
+        .fetch_one(&ctx.db).await?;
+    Ok((StatusCode::OK, Json(feed)))
 }
 
 async fn get_feeds(
     State(ctx): State<AppContext>
-) -> (StatusCode, Json<Vec<RssFeed>>) {
+) -> Result<(StatusCode, Json<Vec<RssFeed>>), AppError> {
     let feeds: Vec<RssFeed> = sqlx::query_as("SELECT id, name, feed_url, last_pub_date FROM rss_feeds ORDER BY id")
-        .fetch_all(&ctx.db).await.unwrap();
-    (StatusCode::OK, Json(feeds))
+        .fetch_all(&ctx.db).await.context("Query Error")?;
+    Ok((StatusCode::OK, Json(feeds)))
 }
 
 async fn force_send_feed(
     State(ctx): State<AppContext>,
     Path(feed_id): Path<u32>
-) -> StatusCode {
+) -> Result<StatusCode, AppError> {
     let feed: RssFeed = sqlx::query_as("SELECT id, name, feed_url, last_pub_date FROM rss_feeds WHERE id = $1")
         .bind(feed_id)
-        .fetch_one(&ctx.db).await.unwrap();
+        .fetch_one(&ctx.db).await?;
     tokio::spawn(async move {
         check_send_feed(&ctx, feed).await;
     });
-    StatusCode::OK
+    Ok(StatusCode::OK)
 }
