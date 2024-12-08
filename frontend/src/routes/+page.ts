@@ -1,5 +1,6 @@
 import type { PageLoad } from './$types';  // Svelte-Kit
 import type { Feed } from '$types';  // My Types
+import { PUBLIC_BACKEND_BASE_URL } from '$env/static/public';
 
 import { superValidate } from "sveltekit-superforms";
 import { formSchema, modifyFormSchema } from "./schema";
@@ -7,7 +8,7 @@ import { zod } from "sveltekit-superforms/adapters";
 
 export const load: PageLoad = async ({ fetch }) => {
   // Fetch Data
-  const res = await fetch('http://localhost:3000/feeds/');
+  const res = await fetch(`${PUBLIC_BACKEND_BASE_URL}/feeds/`);
   if (!res.ok) throw new Error('Bad response');
   const feeds: Feed[] = await res.json();
   return {

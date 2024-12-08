@@ -4,10 +4,10 @@ use sqlx::{
     FromRow, Sqlite, SqlitePool
 };
 use axum::{
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Response, Html},
     routing::{get, post},
     extract::{Path, State},
-    http::{Method, header, StatusCode, Request},
+    http::{Method, header, StatusCode, Request, Uri},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ use tracing::{
     info, error, debug, info_span, enabled,
     instrument, Level, Span
 };
+use rust_embed::Embed;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -137,11 +138,12 @@ async fn main() -> Result<()> {
         .layer(tracelayer).layer(cors);
     // Launch Web Server
     let app = Router::new()
-        // `GET /` goes to `root`
-        .route("/", get(root))
         .route("/feeds/:id/", get(get_feed).put(modify_feed).delete(delete_feed))
         .route("/feeds/:id/forcesend", post(force_send_feed))
         .route("/feeds/", get(get_feeds).post(create_feed))
+        .route("/", get(index_handler))
+        .route("/index.html", get(index_handler))
+        .route("/*file", get(static_handler))
         .layer(middlewares)
         .with_state(context.clone());  // TODO: AXUM LOG REQUESTS
     tokio::spawn(async move {
@@ -202,7 +204,11 @@ async fn check_send_feed(ctx: &AppContext, feed: RssFeed) {
         }
     };
     if let Err(e) = try_block.await {
-        error!("{:?}", e);
+        if enabled!(Level::DEBUG) {
+            error!("{:?}", e); // Format with verbose {:?} with Debug enabled
+        } else {
+            error!("{:#}", e);
+        };
     }
 }
 
@@ -226,10 +232,6 @@ async fn send_notification(ctx: &AppContext, feed: &RssFeed, rssitem: &rss::Item
         .credentials((ctx.config.smtp_auth_user.as_str(), ctx.config.smtp_auth_password.as_str()))
         .connect().await.context("Error connecting to SMTP Server")?
         .send(message).await.context("Error sending message to SMTP Server")
-}
-
-async fn root() -> &'static str{
-    "Hello World!\n"
 }
 
 #[derive(Deserialize)]
@@ -317,4 +319,44 @@ async fn force_send_feed(
         check_send_feed(&ctx, feed).await;
     });
     Ok(StatusCode::OK)
+}
+
+// Fallback Route
+fn not_found_body() -> Html<&'static str> {
+    Html("<h1>404</h1><p>Not Found</p>")
+}
+
+// Static Handlers
+async fn index_handler() -> impl IntoResponse {
+    static_handler("/index.html".parse::<Uri>().unwrap()).await
+}
+
+// Handler that takes the data from the Embed Asset storage
+async fn static_handler(uri: Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/').to_string();
+    StaticFile(path)
+}
+
+#[derive(Embed)]
+#[folder = "frontend/build/"]
+struct Asset;
+
+// This wrapper is for allowind impl IntoResponse
+pub struct StaticFile<T>(pub T);
+
+impl<T> IntoResponse for StaticFile<T>
+where
+    T: Into<String>,
+{
+    fn into_response(self) -> Response {
+        let path = self.0.into();
+
+        match Asset::get(path.as_str()) {
+            Some(content) => {
+                let mime = mime_guess::from_path(path).first_or_octet_stream();
+                ([(header::CONTENT_TYPE, mime.as_ref())], content.data).into_response()
+            }
+            None => (StatusCode::NOT_FOUND, not_found_body()).into_response(),
+        }
+    }
 }

@@ -8,6 +8,7 @@
   import { Input } from "$lib/components/ui/input/index.js";
   import { Button } from "$lib/components/ui/button/index.js";
   import { Delete, Plus, SquarePen } from 'lucide-svelte';
+  import { PUBLIC_BACKEND_BASE_URL } from '$env/static/public';
 
   import { setMessage, superForm, setError } from "sveltekit-superforms";
   // import SuperDebug from "sveltekit-superforms";
@@ -32,7 +33,7 @@
         // Form validation
         if (form.valid) {
           // Call an external API with form.data, await the result and update form
-          const res = await fetch('http://localhost:3000/feeds/', {
+          const res = await fetch(`${PUBLIC_BACKEND_BASE_URL}/feeds/`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -42,7 +43,7 @@
           if (!res.ok) setError(form, 'Error during POST');
           setMessage(form, 'Valid data!');
           createIsOpen = false;
-          await invalidate('http://localhost:3000/feeds/');
+          await invalidate(`${PUBLIC_BACKEND_BASE_URL}/feeds/`);
         }
       }
     }
@@ -60,7 +61,7 @@
         // Form validation
         if (form.valid) {
           // Call an external API with form.data, await the result and update form
-          const res = await fetch(`http://localhost:3000/feeds/${form.data.id}/`, {
+          const res = await fetch(`${PUBLIC_BACKEND_BASE_URL}/feeds/${form.data.id}/`, {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
@@ -69,8 +70,8 @@
           });
           if (!res.ok) setError(form, 'Error during PUT');
           setMessage(form, 'Valid data!');
-          createIsOpen = false;
-          await invalidate(`http://localhost:3000/feeds/${form.data.id}/`);
+          modifyIsOpen = false;
+          await invalidate(`${PUBLIC_BACKEND_BASE_URL}/feeds/${form.data.id}/`);
         }
       }
     }
@@ -96,11 +97,11 @@
   }
 
   async function delete_feed(id: number) {
-    const res = await fetch(`http://localhost:3000/feeds/${id}/`, {
+    const res = await fetch(`${PUBLIC_BACKEND_BASE_URL}/feeds/${id}/`, {
       method: 'DELETE',
     });
     if (!res.ok) throw new Error('Bad response');
-    await invalidate('http://localhost:3000/feeds/');
+    await invalidate(`${PUBLIC_BACKEND_BASE_URL}/feeds/`);
   }
 </script>
 

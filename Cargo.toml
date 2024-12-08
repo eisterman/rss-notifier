@@ -18,6 +18,8 @@ dotenv = "0.15.0"
 clap = { version = "4.5.21", features = ["derive", "env"] }
 anyhow = "1.0.93"
 tower-http = { version = "0.6.2", features = ["cors", "trace"] }
+rust-embed = "8.5.0"
+mime_guess = "2.0.5"
 
 [dependencies.sqlx]
 version = "0.8"

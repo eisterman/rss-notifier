@@ -5,8 +5,6 @@ export const formSchema = z.object({
   feed_url: z.string().url(),
 });
 
-export type FormSchema = typeof formSchema;
-
 export const modifyFormSchema = formSchema.extend({
   id: z.number(),
 });
