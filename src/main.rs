@@ -1,20 +1,21 @@
-use std::sync::Arc;
+use anyhow::{anyhow, Result, Context};
+use axum::{
+    extract::{Path, State},
+    http::{Method, header, StatusCode, Request, Uri},
+    response::{IntoResponse, Response, Html},
+    routing::{get, post},
+    Json, Router,
+};
+use chrono::{DateTime,Utc};
+use clap::Parser;
+use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
+use rust_embed::Embed;
+use serde::{Deserialize, Serialize};
 use sqlx::{
     migrate::{MigrateDatabase, Migrator},
     FromRow, Sqlite, SqlitePool
 };
-use axum::{
-    response::{IntoResponse, Response, Html},
-    routing::{get, post},
-    extract::{Path, State},
-    http::{Method, header, StatusCode, Request, Uri},
-    Json, Router,
-};
-use serde::{Deserialize, Serialize};
-use chrono::{DateTime,Utc};
-use mail_send::{SmtpClientBuilder, mail_builder::MessageBuilder};
-use clap::Parser;
-use anyhow::{anyhow, Result, Context};
+use std::sync::Arc;
 use tower::{ServiceBuilder};
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -25,7 +26,6 @@ use tracing::{
     info, error, debug, info_span, enabled,
     instrument, Level, Span
 };
-use rust_embed::Embed;
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -62,6 +62,12 @@ where
 struct Config {
     #[arg(long,env)]
     database_url: String,
+    #[arg(long,env)]
+    http_host: String,
+    #[arg(long,env)]
+    http_port: u16,
+    #[arg(long,env)]
+    polling_time_sec: u64,
     #[arg(long,env)]
     smtp_host: String,
     #[arg(long,env)]
@@ -121,13 +127,13 @@ async fn main() -> Result<()> {
             // Log the matched route's path (with placeholders not filled in).
             let path = request.uri().to_string();
             info_span!(
-                "http_request",
+                "request",
                 method = ?request.method(),
                 path
             )
         })
         .on_request(|_request: &Request<_>, _span: &Span| {
-                debug!("Request received");
+            debug!("Request received");
         })
         .on_response(
             DefaultOnResponse::new()
@@ -146,12 +152,14 @@ async fn main() -> Result<()> {
         .route("/*file", get(static_handler))
         .layer(middlewares)
         .with_state(context.clone());  // TODO: AXUM LOG REQUESTS
+    let context2 = context.clone();
     tokio::spawn(async move {
-        send_feeds_scheduler(&context).await;
+        send_feeds_scheduler(&context2).await;
     });
     // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.context("Failed to bind Web Service on 0.0.0.0:3000")?;
-    info!("Listening on 0.0.0.0:3000");
+    let listener = tokio::net::TcpListener::bind((context.config.http_host.as_str(), context.config.http_port))
+        .await.context(format!("Failed to bind Web Service on {}:{}", context.config.http_host, context.config.http_port))?;
+    info!("Listening on {}:{}", context.config.http_host, context.config.http_port);
     axum::serve(listener, app).await.context("Failed to serve Web Service")?;
     Ok(())
 }
@@ -162,7 +170,7 @@ async fn send_feeds_scheduler(ctx: &AppContext) {
         if let Err(e) = send_feeds(ctx).await {
             error!("{}", e);
         }
-        tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(ctx.config.polling_time_sec)).await;
     }
 }
 
